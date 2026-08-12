@@ -128,3 +128,4 @@ run_values = bip %>%
 bip = inner_join(bip, run_values, by = "TB")
 
 saveRDS(bip, "bip.RDS")
+saveRDS(run_values, "rv.RDS")
