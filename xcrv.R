@@ -6,6 +6,7 @@ library(dplyr)
 library(parallel)
 library(ggplot2)
 library(pdp)
+library(readr)
 library(mgcv)
 library(randomForest)
 setwd("baseball-portfolio")
@@ -14,6 +15,14 @@ ncores = detectCores()
 
 bip = readRDS("bip.RDS")
 run_values <- readRDS("rv.RDS")
+
+
+test_set = bip %>% filter(year == 2026)
+train_set = bip %>% filter(year < 2026)
+
+
+rm(bip)
+gc() # just bc i am working with so little processing power here
 
 #### eda ####
 
@@ -41,15 +50,8 @@ featurePlot(
   plot = "pairs"
 )
 
-#### begin model type selection ####
+#### model selection ####
 
-
-test_set = bip %>% filter(year == 2026)
-train_set = bip %>% filter(year < 2026)
-
-
-rm(bip)
-gc() # just bc i am working with so little processing power here
 
 set.seed(2005)
 train_set$partition = sample(1:10,nrow(train_set), replace = T)
@@ -130,27 +132,45 @@ write.csv(rmsedf, "rmse.csv", row.names = FALSE)
 
 #### model tuning ####
 
-tune_grid = expand.grid(
-  max_depth = c(2, 3, 4, 5),
-  min_child_weight = c(1, 5, 10, 20),
-  eta = c(0.025, 0.05, 0.1, 0.20),
-  subsample = c(0.7, 0.85, 1),
-  gamma = c(0, 0.5, 1)
-  # early stopping rounds? if we add nrounds param
-)
-tune_grid$row_num = seq_len(nrow(tune_grid))
-tune_grid$rmse = rep(NA, nrow(tune_grid))
-preds = data.frame()
+
+if (file.exists("tune_rmse.csv")) {
+  tune_grid <- read_csv("tune_rmse.csv")
+} else {
+
+  tune_grid = expand.grid(
+    max_depth = c(2, 3, 4, 5),
+    min_child_weight = c(1, 5, 10, 20),
+    eta = c(0.025, 0.05, 0.1, 0.20),
+    subsample = c(0.7, 0.85, 1),
+    gamma = c(0, 0.5, 1)
+  )
+  tune_grid$row_num = seq_len(nrow(tune_grid))
+  tune_grid$rmse = rep(NA, nrow(tune_grid))
+
+}
+
+set.seed(2005)
+train_set$partition = sample(1:5,nrow(train_set), replace = T)
+# larger search space, fewer folds will train faster
+# i prefer 10, but i cannot let this run for 100+ hours nonstop
+
+train_set %>% group_by(partition) %>% summarise(count = n())
 
 for(row in seq_len(nrow(tune_grid))){
   if(!is.na(tune_grid$rmse[row])){next}
   
   print(paste0("beginning tuning grid row ", row, " out of ", nrow(tune_grid)))
   print(Sys.time())
-  for(group in 1:10){
+  preds = data.frame()
+  
+  for(group in 1:5){
     dtrain <- xgb.DMatrix(
       data = as.matrix((train_set %>% filter(partition != group))[,c("launch_speed", "launch_angle", "spray_angle")]),
       label = as.integer((train_set %>% filter(partition != group))$TB)
+    )
+    dvalid <- xgb.DMatrix(
+      data = as.matrix((train_set %>% filter(partition == group))[,c("launch_speed", "launch_angle", "spray_angle")]),
+      label = as.integer((train_set %>% filter(partition == group))$TB)
     )
     xgb <- xgb.train(
       params = list(
@@ -165,9 +185,15 @@ for(row in seq_len(nrow(tune_grid))){
       ),
       data = dtrain,
       nrounds = 10/(tune_grid$eta[row]),
-      verbose = 1
+      watchlist = list(
+        train = dtrain,
+        eval = dvalid
+      ),
+      early_stopping_rounds = 50,
+      verbose = 0
     )
     rm(dtrain)
+    rm(dvalid)
     gc()
     pred_df <- train_set %>%
       filter(partition == group) %>%
