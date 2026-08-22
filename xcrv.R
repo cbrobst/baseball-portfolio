@@ -9,6 +9,7 @@ library(pdp)
 library(readr)
 library(mgcv)
 library(randomForest)
+library(MetricsWeighted)
 setwd("baseball-portfolio")
 
 ncores = detectCores()
@@ -212,16 +213,134 @@ for(row in seq_len(nrow(tune_grid))){
   
 }
 
+#### final model ####
 
+best_tune = tune_grid[which.min(tune_grid$rmse),]
 
+dtrain <- xgb.DMatrix(
+  data = as.matrix(train_set[,c("launch_speed", "launch_angle", "spray_angle")]),
+  label = as.integer(train_set$TB)
+)
+xgb <- xgb.train(
+  params = list(
+    objective = "multi:softprob",
+    num_class = 5,
+    max_depth = best_tune$max_depth[1],
+    eta = best_tune$eta[1],
+    subsample = best_tune$subsample[1],
+    colsample_bytree = 1,
+    gamma = best_tune$gamma[1],
+    min_child_weight = best_tune$min_child_weight[1]
+  ),
+  data = dtrain,
+  nrounds = 10/(best_tune$eta[1]),
+  verbose = 0
+)
+rm(dtrain)
+gc()
+
+saveRDS(xgb, "xgb_xcrv.RDS")
 
 #### test set ####
 
+# woba weights for comparison to savant model
+# https://www.fangraphs.com/tools/guts?type=cn
+run_values$woba = c(0, 0.890,	1.261,	1.596,	2.049	)
+
+test_set <- test_set %>%
+  mutate(xrv = matrix(predict(xgb, newdata = as.matrix(select(., 
+                                  launch_speed, launch_angle, spray_angle)), 
+                              type = "prob"),
+                      ncol = 5, byrow = TRUE) %*% run_values$run_value,
+         xwobacon = matrix(predict(xgb, newdata = as.matrix(select(., 
+                                   launch_speed, launch_angle, spray_angle)), 
+                                   type = "prob"),
+                           ncol = 5, byrow = TRUE) %*% run_values$woba)
 
 
+# batted ball rmse
+# player-season rmse
+
+RMSE(test_set$xrv, test_set$run_value)
+cor(test_set$expected_woba, test_set$run_value)^2
+cor(test_set$xwobacon, test_set$run_value)^2
+# our new model is much more descriptive than savant, measured by Rsq
 
 
 #### yoy desc/pred/stickiness w RV, xRV, savants xwoba ####
 
+all_bip = bind_rows(train_set, test_set) %>%
+  mutate(xrv = matrix(predict(xgb, newdata = as.matrix(select(., 
+                                   launch_speed, launch_angle, spray_angle)), 
+                              type = "prob"),
+                      ncol = 5, byrow = TRUE) %*% run_values$run_value,
+         xwobacon = matrix(predict(xgb, newdata = as.matrix(select(., 
+                                        launch_speed, launch_angle, spray_angle)), 
+                                   type = "prob"),
+                           ncol = 5, byrow = TRUE) %*% run_values$woba)
 
+
+RMSE(all_bip$xrv, all_bip$run_value)
+cor(all_bip$expected_woba, all_bip$run_value)^2
+cor(all_bip$xwobacon, all_bip$run_value)^2
+
+player_season = all_bip %>% group_by(batter_id, batter_name, year) %>%
+  summarise(bip = n(), 
+            my_xwobacon = mean(xwobacon),
+            savant_xwobacon = mean(expected_woba),
+            my_xrv = mean(xrv),
+            actual_rv = mean(run_value),
+            EV = mean(launch_speed),
+            GB = mean(ifelse(launch_angle < 10, 1, 0))
+            )
+
+yoy = inner_join(player_season, player_season %>% mutate(year = year - 1),
+                 by = c("batter_id","batter_name","year"), suffix = c("_pre","_post"))
+
+weighted_cor(yoy$my_xwobacon_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$savant_xwobacon_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$my_xrv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$actual_rv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+
+
+weighted_cor(yoy$my_xwobacon_pre, yoy$my_xwobacon_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$savant_xwobacon_pre, yoy$savant_xwobacon_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$my_xrv_pre, yoy$my_xrv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$actual_rv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+
+#### developing an underfit metric for better future season predictiveness ####
+
+ev_lm = lm(run_value~launch_speed, all_bip)
+ev_la_model = lm(run_value~launch_speed*poly(launch_angle,2), all_bip)
+
+all_bip$qc_rv = (predict(ev_lm, all_bip)+predict(ev_la_model, all_bip))/2
+
+
+
+player_season = all_bip %>% group_by(batter_id, batter_name, year) %>%
+  summarise(bip = n(), 
+            my_xwobacon = mean(xwobacon),
+            savant_xwobacon = mean(expected_woba),
+            my_xrv = mean(xrv),
+            actual_rv = mean(run_value),
+            QC = mean(qc_rv),
+            EV = mean(launch_speed),
+            GB = mean(ifelse(launch_angle < 10, 1, 0))
+  )
+
+yoy = inner_join(player_season, player_season %>% mutate(year = year - 1),
+                 by = c("batter_id","batter_name","year"), suffix = c("_pre","_post"))
+
+weighted_cor(yoy$my_xwobacon_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$savant_xwobacon_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$my_xrv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$actual_rv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$QC_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+
+
+weighted_cor(yoy$my_xwobacon_pre, yoy$my_xwobacon_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$savant_xwobacon_pre, yoy$savant_xwobacon_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$my_xrv_pre, yoy$my_xrv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$actual_rv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+weighted_cor(yoy$QC_pre, yoy$QC_post, pmin(yoy$bip_pre, yoy$bip_post))^2
 

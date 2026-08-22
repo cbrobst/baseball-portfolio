@@ -17,7 +17,8 @@ for(y in 2016:2026){
                                                   end_date = as.Date(paste0(y,"-11-01"))) %>%
       select(game_id, year, event_index, pitch_number, bat_speed, swing_length, swing_path_tilt,
              launch_speed, launch_angle, delta_run_exp, attack_angle, attack_direction,
-             expected_woba, iso_value, hit_coord_x, hit_coord_y, babip_value, events)
+             expected_woba, iso_value, hit_coord_x, hit_coord_y, babip_value, events, 
+             batter_id, pitcher_id, batter_name)
     
     if(ncores >= 10){
       print("first query done")
@@ -43,7 +44,8 @@ for(y in 2016:2026){
                                                   end_date = as.Date(Sys.Date())) %>%
       select(game_id, year, event_index, pitch_number, bat_speed, swing_length, swing_path_tilt,
              launch_speed, launch_angle, delta_run_exp, attack_angle, attack_direction,
-             expected_woba, iso_value, hit_coord_x, hit_coord_y, babip_value, events)
+             expected_woba, iso_value, hit_coord_x, hit_coord_y, babip_value, events, 
+             batter_id, pitcher_id, batter_name)
     
     if(ncores >= 10){
       print("first query done")
