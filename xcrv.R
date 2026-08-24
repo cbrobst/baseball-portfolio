@@ -311,7 +311,7 @@ weighted_cor(yoy$actual_rv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_po
 #### developing an underfit metric for better future season predictiveness ####
 
 ev_lm = lm(run_value~launch_speed, all_bip)
-ev_la_model = lm(run_value~launch_speed*poly(launch_angle,2), all_bip)
+ev_la_model = mgcv::gam(run_value~te(launch_speed, launch_angle), data = all_bip)
 
 all_bip$qc_rv = (predict(ev_lm, all_bip)+predict(ev_la_model, all_bip))/2
 
@@ -331,16 +331,19 @@ player_season = all_bip %>% group_by(batter_id, batter_name, year) %>%
 yoy = inner_join(player_season, player_season %>% mutate(year = year - 1),
                  by = c("batter_id","batter_name","year"), suffix = c("_pre","_post"))
 
-weighted_cor(yoy$my_xwobacon_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
 weighted_cor(yoy$savant_xwobacon_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
-weighted_cor(yoy$my_xrv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
-weighted_cor(yoy$actual_rv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
 weighted_cor(yoy$QC_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
 
 
-weighted_cor(yoy$my_xwobacon_pre, yoy$my_xwobacon_post, pmin(yoy$bip_pre, yoy$bip_post))^2
 weighted_cor(yoy$savant_xwobacon_pre, yoy$savant_xwobacon_post, pmin(yoy$bip_pre, yoy$bip_post))^2
-weighted_cor(yoy$my_xrv_pre, yoy$my_xrv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
-weighted_cor(yoy$actual_rv_pre, yoy$actual_rv_post, pmin(yoy$bip_pre, yoy$bip_post))^2
 weighted_cor(yoy$QC_pre, yoy$QC_post, pmin(yoy$bip_pre, yoy$bip_post))^2
+
+
+
+cor(all_bip$expected_woba, all_bip$run_value)^2
+cor(all_bip$qc_rv, all_bip$run_value)^2
+# on the batted ball level, my lm + gam is much less descriptive than savant
+# which was already less descriptive than my xgb model
+# but on the player-season level, year over year, my lm + gam ensemble
+# is more predictive of future quality of contact
 
