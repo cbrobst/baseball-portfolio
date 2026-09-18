@@ -6,19 +6,19 @@ library(dplyr)
 library(parallel)
 setwd("baseball-portfolio")
 
-ncores = detectCores()
 
 #### download and clean batting data ####
 
 for(y in 2016:2026){
   print(Sys.time())
+  ncores = detectCores()
   if(y < 2026){
     season = sabRmetrics::download_baseballsavant(start_date = as.Date(paste0(y,"-03-03")), 
                                                   end_date = as.Date(paste0(y,"-11-01"))) %>%
       select(game_id, year, event_index, pitch_number, bat_speed, swing_length, swing_path_tilt,
              launch_speed, launch_angle, delta_run_exp, attack_angle, attack_direction,
              expected_woba, iso_value, hit_coord_x, hit_coord_y, babip_value, events, 
-             batter_id, pitcher_id, batter_name)
+             batter_id, pitcher_id, batter_name, age_bat, description )
     
     if(ncores >= 10){
       print("first query done")
@@ -45,7 +45,7 @@ for(y in 2016:2026){
       select(game_id, year, event_index, pitch_number, bat_speed, swing_length, swing_path_tilt,
              launch_speed, launch_angle, delta_run_exp, attack_angle, attack_direction,
              expected_woba, iso_value, hit_coord_x, hit_coord_y, babip_value, events, 
-             batter_id, pitcher_id, batter_name)
+             batter_id, pitcher_id, batter_name, age_bat, description )
     
     if(ncores >= 10){
       print("first query done")
@@ -68,7 +68,7 @@ for(y in 2016:2026){
     gc()
   }
   
-  print(paste0("done with "), y)
+  print(paste0("done with ", y))
   rm(list = ls())
   gc()
 }
@@ -99,7 +99,7 @@ if (file.exists("bip.RDS")) {
   
   print(paste0("nrow of bip: ", nrow(bip)))
   
-  saveRDS(bip, "bip.RDS")
+  #saveRDS(bip, "bip.RDS")
 }
 
 
@@ -130,4 +130,4 @@ run_values = bip %>%
 bip = inner_join(bip, run_values, by = "TB")
 
 saveRDS(bip, "bip.RDS")
-saveRDS(run_values, "rv.RDS")
+#saveRDS(run_values, "rv.RDS") # ran previously, do not overwrite
