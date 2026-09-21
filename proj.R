@@ -7,9 +7,10 @@ library(parallel)
 library(ggplot2)
 library(pdp)
 library(readr)
-library(mgcv)
+library(tidyr)
 library(splines)
 library(scam)
+library(brms)
 library(MetricsWeighted)
 setwd("baseball-portfolio")
 
@@ -244,23 +245,149 @@ df$crv_regressed = (df$actual_rv_past40*df$bip40 + df$reg_target*weight)/(weight
 
 #### aging curve ####
 
+df = df %>% mutate(delta = actual_rv_future - crv_regressed)
 
 
+mean_age <- mean(df$age, na.rm = TRUE)
+b_age    <- quantile(df$age, probs = c(0.25, 0.75), na.rm = TRUE)
+mean_rv  <- mean(df$actual_rv_past40, na.rm = TRUE)
+b_rv     <- quantile(df$actual_rv_past40, probs = c(0.25, 0.75), na.rm = TRUE)
 
+formulas <- c(
+  "delta ~ age",
+  "delta ~ actual_rv_past40",
+  "delta ~ age + actual_rv_past40",
+  "delta ~ age * actual_rv_past40",
+  "delta ~ ns(age, knots = mean_age, Boundary.knots = b_age)",
+  "delta ~ ns(age, knots = mean_age, Boundary.knots = b_age) + actual_rv_past40",
+  "delta ~ age + ns(actual_rv_past40, knots = mean_rv, Boundary.knots = b_rv)",
+  "delta ~ ns(age, knots = mean_age, Boundary.knots = b_age) + ns(actual_rv_past40, knots = mean_rv, Boundary.knots = b_rv)",
+  "delta ~ age * ns(actual_rv_past40, knots = mean_rv, Boundary.knots = b_rv)",
+  "delta ~ ns(age, knots = mean_age, Boundary.knots = b_age) * actual_rv_past40",
+  "delta ~ ns(age, knots = mean_age, Boundary.knots = b_age) * ns(actual_rv_past40, knots = mean_rv, Boundary.knots = b_rv)"
+)
+
+
+tune_grid = data.frame(formulas = formulas, rmse = rep(NA, length(formulas)))
+nrow(subset(df, bip40 > 50)) # still large sample, since delta is loosely dependent on past/decayed BIP
+
+
+for(row in seq_len(nrow(tune_grid))){
+  if(!is.na(tune_grid$rmse[row])){next}
+  
+  print(paste0("beginning tuning grid row ", row, " out of ", nrow(tune_grid)))
+  print(Sys.time())
+  preds = data.frame()
+  
+  for(group in 1:5){
+    model = lm(formula = tune_grid$formulas[row], data = df %>% filter(partition != group, bip40 > 50))
+    pred_df <- df %>% filter(partition == group) %>% 
+      mutate(pred = predict(model, .)) %>%  select(pred, delta)
+    
+    preds = bind_rows(pred_df, preds)
+    gc()
+    
+  }
+  tune_grid$rmse[row] = sqrt(mean((preds$delta - preds$pred)^2))
+  
+}
+
+aging_formula = tune_grid$formulas[which.min(tune_grid$rmse)]
+
+aging_model = lm(aging_formula, df %>% filter(bip40 > 50))
+pdp::partial(aging_model, c("age","actual_rv_past40"), plot = T)
+# well thats simpler than i wanted, but not intuitively incorrect
 
 #### in-sample outputs ####
 
+df = df %>% mutate(projection = crv_regressed + predict(aging_model, .))
+
+ggplot(df, aes(x = projection, y = actual_rv_future)) + geom_point() + geom_smooth() +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "solid", linewidth = 1)
+
+ggplot(df %>% filter(bip40 > 50), 
+       aes(x = projection, y = actual_rv_future)) + geom_point() + geom_smooth() +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "solid", linewidth = 1)
+
+
+calibration_data <- df %>%
+  mutate(bin = ntile(projection, 10)) %>% 
+  group_by(bin) %>%
+  summarize(mean_predicted = mean(projection), mean_actual = mean(actual_rv_future), .groups = "drop")
+
+
+ggplot(calibration_data, aes(x = mean_predicted, y = mean_actual)) +
+  geom_point(color = "black", size = 3.5) + 
+  geom_line(color = "black", linetype = "dashed", linewidth = 1) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "solid", linewidth = 1) +
+  labs(title = "Projection Lift Plot",
+    subtitle = "Black line shows model calibration; Red line shows perfect calibration",
+    x = "Bucket Projection", y = "Bucket Actual RV") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+
+sqrt(mean((df$actual_rv_future - df$projection)^2))* 400 # approx 400 BIP per full season
+sqrt(mean((df$actual_rv_future - df$actual_rv_past40)^2))* 400 # using past data, no projection
+
+temp = df %>% filter(bip40 > 200, bip_future > 200)
+sqrt(mean((temp$actual_rv_future - temp$projection)^2))* 400 # minimal improvement on larger sample
+
+
+#### transforming to bayesian ####
+
+get_prior(f, data = df)
+
+baseline_model = brm(formula = f, 
+                     data = df,
+                     prior = c(prior(normal(1,0.1), class = "b"),
+                               prior(normal(0,0.1), class = "Intercept")),
+                     chains = 4,
+                     iter = 4000,
+                     warmup = 2000,
+                     seed = 6,
+                     cores = 4 # detectCores()
+                     )
+
+
+pp_check(baseline_model, ndraws = 100)
 
 
 
+aging_model = brm(formula = aging_formula, 
+                  data = df,
+                  prior = c(prior(normal(0,0.1), class = "b"),
+                            prior(normal(0,0.1), class = "Intercept")),
+                  chains = 4,
+                  iter = 4000,
+                  warmup = 2000,
+                  seed = 6,
+                  cores = 4 # detectCores()
+)
 
 
+pp_check(aging_model, ndraws = 100)
 
-#### transforming to bayesian to get median projections ####
+#### bayesian median outputs ####
+
+draws_df = df %>%
+  uncount(1000) %>%
+  mutate(Draw = rep(1:1000, times = nrow(df)))
+
+draws_df$baseline_pred <- as.vector(posterior_predict(baseline_model, newdata = df, ndraws = 1000))
+draws_df$aging_pred <- as.vector(posterior_predict(aging_model, newdata = df, ndraws = 1000))
+draws_df$projection = draws_df$aging_pred + (draws_df$actual_rv_past40*draws_df$bip40 + draws_df$baseline_pred*weight)/(weight+draws_df$bip40)
+
+median_outputs = draws_df %>% 
+  group_by(batter_id, batter_name, future_season, age, actual_rv_future) %>%
+  summarise(median_proj = median(projection))
 
 
+ggplot(median_outputs, aes(x = median_proj, y = actual_rv_future)) + geom_point() + geom_smooth() +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "solid", linewidth = 1)
 
-
-
+sqrt(mean((median_outputs$actual_rv_future - median_outputs$median_proj)^2))* 400 
+sqrt(mean((df$actual_rv_future - df$projection)^2))* 400
+# bayesian provides only slight improvement in rmse
 
 
